@@ -1,22 +1,22 @@
 // ============================================================
-// BOKKARA AIRLINE SEARCH API
+// BOKKARA — AIRLINE SEARCH API
 // ============================================================
-//
 // Searches SerpApi Google Search for:
-//   - Airline names
-//   - Flight numbers
+// - Airline names
+// - Flight numbers
 //
 // Returns:
-//   - Airline name
-//   - IATA code
-//   - Airline logo
-//   - Official website
-//   - Flight number when available
+// - Airline name
+// - IATA code
+// - Airline logo
+// - Official website
+// - Flight number
 //
 // Endpoint:
-// GET /api/airline-search?q=BW526
+// /api/airline-search?q=Caribbean%20Airlines
+// /api/airline-search?q=BW526
 //
-// Environment variable required:
+// Environment variable:
 // SERPAPI_API_KEY
 // ============================================================
 
@@ -61,28 +61,18 @@ export default async function handler(req, res) {
   }
 
   // ----------------------------------------------------------
-  // SEARCH QUERY
+  // QUERY
   // ----------------------------------------------------------
 
-  const rawQuery = req.query.q;
+  const query = String(req.query.q || "").trim();
 
-  if (!rawQuery) {
+  if (!query) {
     return res.status(400).json({
       success: false,
       error: "Missing search query"
     });
   }
 
-  const query = String(rawQuery).trim();
-
-  if (!query) {
-    return res.status(400).json({
-      success: false,
-      error: "Search query cannot be empty"
-    });
-  }
-
-  // Prevent excessively large searches
   if (query.length > 100) {
     return res.status(400).json({
       success: false,
@@ -93,7 +83,7 @@ export default async function handler(req, res) {
   try {
 
     // --------------------------------------------------------
-    // SERPAPI GOOGLE SEARCH
+    // SERPAPI
     // --------------------------------------------------------
 
     const params = new URLSearchParams({
@@ -104,26 +94,10 @@ export default async function handler(req, res) {
       gl: "us"
     });
 
-    const serpApiUrl =
+    const url =
       `https://serpapi.com/search.json?${params.toString()}`;
 
-    const response = await fetch(serpApiUrl);
-
-    if (!response.ok) {
-
-      const errorText = await response.text();
-
-      console.error(
-        "SerpApi HTTP error:",
-        response.status,
-        errorText
-      );
-
-      return res.status(502).json({
-        success: false,
-        error: "SerpApi request failed"
-      });
-    }
+    const response = await fetch(url);
 
     const data = await response.json();
 
@@ -131,46 +105,55 @@ export default async function handler(req, res) {
     // SERPAPI ERROR
     // --------------------------------------------------------
 
-    if (data.error) {
+    if (!response.ok || data.error) {
 
       console.error(
         "SerpApi error:",
-        data.error
+        data.error || response.status
       );
 
       return res.status(502).json({
         success: false,
-        error: data.error
+        error:
+          data.error ||
+          "SerpApi request failed"
       });
     }
 
     // --------------------------------------------------------
-    // DETECT FLIGHT RESULT
+    // DEBUG LOG
     // --------------------------------------------------------
 
-    const flightResult =
-      data.flight_result || null;
+    console.log(
+      "SerpApi query:",
+      query
+    );
+
+    console.log(
+      "Knowledge Graph:",
+      JSON.stringify(
+        data.knowledge_graph || null,
+        null,
+        2
+      )
+    );
 
     // --------------------------------------------------------
-    // DETECT KNOWLEDGE GRAPH
-    // --------------------------------------------------------
-
-    const knowledgeGraph =
-      data.knowledge_graph || null;
-
-    // --------------------------------------------------------
-    // AIRLINE INFORMATION
+    // VARIABLES
     // --------------------------------------------------------
 
     let airlineName = null;
     let airlineCode = null;
+    let airlineLogo = null;
+    let airlineWebsite = null;
     let flightNumber = null;
-    let logo = null;
-    let website = null;
 
-    // --------------------------------------------------------
+    // ========================================================
     // 1. FLIGHT RESULT
-    // --------------------------------------------------------
+    // ========================================================
+
+    const flightResult =
+      data.flight_result || null;
 
     if (flightResult) {
 
@@ -182,15 +165,16 @@ export default async function handler(req, res) {
         flightResult.airline_iata_code ||
         null;
 
-      // Try to get flight number
-      if (flightResult.flight_designator) {
+      flightNumber =
+        flightResult.flight_designator ||
+        null;
 
-        flightNumber =
-          flightResult.flight_designator;
+      // Some responses put the airline information
+      // inside dates metadata.
 
-      } else if (
+      if (
         Array.isArray(flightResult.dates) &&
-        flightResult.dates.length > 0
+        flightResult.dates.length
       ) {
 
         const metadata =
@@ -198,114 +182,205 @@ export default async function handler(req, res) {
 
         if (metadata) {
 
-          if (!airlineCode) {
-            airlineCode =
-              metadata.airline_iata_code ||
-              null;
-          }
+          airlineCode =
+            airlineCode ||
+            metadata.airline_iata_code ||
+            null;
 
-          if (
-            metadata.flight_number
-          ) {
-            flightNumber =
-              `${metadata.airline_iata_code || airlineCode || ""} ${metadata.flight_number}`
-              .trim();
+          if (!flightNumber) {
+
+            if (
+              metadata.airline_iata_code &&
+              metadata.flight_number
+            ) {
+
+              flightNumber =
+                `${metadata.airline_iata_code} ${metadata.flight_number}`;
+
+            } else if (
+              metadata.flight_number
+            ) {
+
+              flightNumber =
+                metadata.flight_number;
+            }
           }
         }
       }
     }
 
-    // --------------------------------------------------------
+    // ========================================================
     // 2. KNOWLEDGE GRAPH
-    // --------------------------------------------------------
+    // ========================================================
 
-    if (knowledgeGraph) {
+    const kg =
+      data.knowledge_graph || null;
 
-      if (!airlineName) {
+    if (kg) {
 
-        airlineName =
-          knowledgeGraph.title ||
-          null;
-      }
+      // Name
+      airlineName =
+        airlineName ||
+        kg.title ||
+        kg.name ||
+        null;
 
-      if (!logo) {
+      // Logo / image
+      airlineLogo =
+        kg.image ||
+        kg.thumbnail ||
+        kg.logo ||
+        null;
 
-        logo =
-          knowledgeGraph.image ||
-          knowledgeGraph.thumbnail ||
-          null;
-      }
+      // Website
+      airlineWebsite =
+        kg.website ||
+        null;
 
-      if (!website) {
+      // IATA / airline code
+      airlineCode =
+        airlineCode ||
+        kg.iata_code ||
+        kg.iata ||
+        null;
 
-        website =
-          knowledgeGraph.website ||
+      // Sometimes Google puts identifiers
+      // into a nested object.
+
+      if (
+        !airlineCode &&
+        kg.identifiers
+      ) {
+
+        airlineCode =
+          kg.identifiers.iata ||
+          kg.identifiers.iata_code ||
           null;
       }
     }
 
-    // --------------------------------------------------------
-    // 3. SEARCH ORGANIC RESULTS
-    //
-    // Use these as additional information.
-    // --------------------------------------------------------
+    // ========================================================
+    // 3. ORGANIC RESULTS
+    // ========================================================
 
-    const organicResults =
+    const organic =
       Array.isArray(data.organic_results)
         ? data.organic_results
         : [];
 
     // --------------------------------------------------------
-    // FIND POSSIBLE AIRLINE WEBSITE
+    // Try to identify airline from organic result
     // --------------------------------------------------------
 
-    if (!website && airlineName) {
+    if (!airlineName) {
 
-      const normalizedAirline =
-        airlineName
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, "");
+      const lowerQuery =
+        query.toLowerCase();
 
-      for (const result of organicResults) {
+      for (const result of organic) {
 
         const title =
           String(result.title || "");
 
-        const link =
-          String(result.link || "");
+        const snippet =
+          String(result.snippet || "");
 
-        const source =
-          String(result.source || "");
+        const text =
+          `${title} ${snippet}`.toLowerCase();
 
-        const combined =
-          `${title} ${source}`.toLowerCase();
-
-        // Prefer results whose title/source
-        // contains the airline name.
-        const normalizedText =
-          combined
-            .replace(/[^a-z0-9]/g, "");
-
+        // Strong airline indicators
         if (
-          normalizedText.includes(
-            normalizedAirline
-          ) &&
-          isLikelyWebsite(link)
+          text.includes("airline") ||
+          text.includes("airways") ||
+          text.includes("airlines") ||
+          text.includes("aviation")
         ) {
 
-          website = link;
+          airlineName =
+            title
+              .replace(
+                /\s*[-|–—]\s*official.*$/i,
+                ""
+              )
+              .trim();
+
+          break;
+        }
+
+        // If the query itself looks like an airline
+        // name, use the first highly relevant result.
+        if (
+          text.includes(lowerQuery)
+        ) {
+
+          airlineName =
+            title
+              .replace(
+                /\s*[-|–—]\s*official.*$/i,
+                ""
+              )
+              .trim();
+
           break;
         }
       }
     }
 
-    // --------------------------------------------------------
-    // FIND LOGO FROM ORGANIC RESULTS IF NECESSARY
-    // --------------------------------------------------------
+    // ========================================================
+    // 4. FIND OFFICIAL WEBSITE
+    // ========================================================
 
-    if (!logo) {
+    if (!airlineWebsite) {
 
-      for (const result of organicResults) {
+      for (const result of organic) {
+
+        const link =
+          result.link;
+
+        if (!link) {
+          continue;
+        }
+
+        if (!isValidWebsite(link)) {
+          continue;
+        }
+
+        const title =
+          String(result.title || "")
+            .toLowerCase();
+
+        const source =
+          String(result.source || "")
+            .toLowerCase();
+
+        const airline =
+          String(airlineName || "")
+            .toLowerCase();
+
+        // Strong match
+        if (
+          airline &&
+          (
+            title.includes(airline) ||
+            source.includes(airline)
+          )
+        ) {
+
+          airlineWebsite =
+            cleanWebsite(link);
+
+          break;
+        }
+      }
+    }
+
+    // ========================================================
+    // 5. FIND LOGO FROM ORGANIC RESULT
+    // ========================================================
+
+    if (!airlineLogo) {
+
+      for (const result of organic) {
 
         if (
           result.thumbnail &&
@@ -316,14 +391,14 @@ export default async function handler(req, res) {
             String(result.title || "")
               .toLowerCase();
 
-          const name =
+          const airline =
             airlineName.toLowerCase();
 
           if (
-            title.includes(name)
+            title.includes(airline)
           ) {
 
-            logo =
+            airlineLogo =
               result.thumbnail;
 
             break;
@@ -332,33 +407,70 @@ export default async function handler(req, res) {
       }
     }
 
-    // --------------------------------------------------------
-    // NORMALIZE WEBSITE
-    // --------------------------------------------------------
+    // ========================================================
+    // 6. TRY TO EXTRACT IATA CODE
+    // ========================================================
 
-    if (website) {
+    if (!airlineCode) {
 
-      website =
-        normalizeWebsite(website);
+      // Look for common patterns:
+      //
+      // Caribbean Airlines (BW)
+      // Caribbean Airlines BW
+      // BW - Caribbean Airlines
+
+      const searchText =
+        JSON.stringify(data);
+
+      const codeMatch =
+        searchText.match(
+          /(?:iata[_\s-]*(?:code)?|airline_iata_code)["']?\s*[:=]\s*["']([A-Z0-9]{2,3})["']/i
+        );
+
+      if (codeMatch) {
+
+        airlineCode =
+          codeMatch[1].toUpperCase();
+      }
     }
 
-    // --------------------------------------------------------
-    // NOTHING FOUND
-    // --------------------------------------------------------
+    // ========================================================
+    // 7. CLEAN AIRLINE NAME
+    // ========================================================
+
+    if (airlineName) {
+
+      airlineName =
+        airlineName
+          .replace(
+            /\s*[-|–—]\s*(Official Site|Official Website|Home|Homepage).*$/i,
+            ""
+          )
+          .trim();
+    }
+
+    // ========================================================
+    // 8. NO AIRLINE
+    // ========================================================
 
     if (!airlineName) {
 
       return res.status(404).json({
+
         success: false,
+
         found: false,
+
         query,
-        error: "No airline found"
+
+        error:
+          "No airline found"
       });
     }
 
-    // --------------------------------------------------------
+    // ========================================================
     // RESPONSE
-    // --------------------------------------------------------
+    // ========================================================
 
     return res.status(200).json({
 
@@ -370,7 +482,8 @@ export default async function handler(req, res) {
 
       airline: {
 
-        name: airlineName,
+        name:
+          airlineName,
 
         iata_code:
           airlineCode,
@@ -379,11 +492,12 @@ export default async function handler(req, res) {
           flightNumber,
 
         logo:
-          logo,
+          airlineLogo,
 
         website:
-          website
+          airlineWebsite
       }
+
     });
 
   } catch (error) {
@@ -405,15 +519,18 @@ export default async function handler(req, res) {
 
 
 // ============================================================
-// HELPERS
+// WEBSITE VALIDATION
 // ============================================================
 
-function isLikelyWebsite(url) {
+function isValidWebsite(url) {
 
   try {
 
     const parsed =
       new URL(url);
+
+    const hostname =
+      parsed.hostname.toLowerCase();
 
     if (
       parsed.protocol !== "https:" &&
@@ -422,12 +539,7 @@ function isLikelyWebsite(url) {
       return false;
     }
 
-    // Don't return Google/SerpApi/internal
-    // search URLs as the airline website.
-    const hostname =
-      parsed.hostname.toLowerCase();
-
-    const blockedHosts = [
+    const blocked = [
 
       "google.com",
       "googleusercontent.com",
@@ -436,14 +548,17 @@ function isLikelyWebsite(url) {
       "facebook.com",
       "instagram.com",
       "linkedin.com",
-      "wikipedia.org"
+      "wikipedia.org",
+      "tripadvisor.com",
+      "expedia.com",
+      "booking.com"
 
     ];
 
-    return !blockedHosts.some(
-      blocked =>
-        hostname === blocked ||
-        hostname.endsWith(`.${blocked}`)
+    return !blocked.some(
+      domain =>
+        hostname === domain ||
+        hostname.endsWith(`.${domain}`)
     );
 
   } catch {
@@ -453,7 +568,11 @@ function isLikelyWebsite(url) {
 }
 
 
-function normalizeWebsite(url) {
+// ============================================================
+// CLEAN WEBSITE
+// ============================================================
+
+function cleanWebsite(url) {
 
   try {
 
@@ -462,8 +581,7 @@ function normalizeWebsite(url) {
 
     parsed.hash = "";
 
-    // Remove common tracking parameters.
-    const removeParams = [
+    const trackingParams = [
 
       "utm_source",
       "utm_medium",
@@ -475,7 +593,7 @@ function normalizeWebsite(url) {
 
     ];
 
-    removeParams.forEach(
+    trackingParams.forEach(
       param =>
         parsed.searchParams.delete(param)
     );
