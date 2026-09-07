@@ -1,25 +1,22 @@
 /**
- * =========================================================
  * BOKKARA AIRLINE SEARCH API
- * VERCEL SERVERLESS FUNCTION
- * =========================================================
+ * Vercel Serverless Function
  *
- * GET:
+ * Endpoint:
  * /api/airline-search?flight=B6%20117&date=2026-09-07
  *
- * Returns ONLY the requested flight and requested date.
- * =========================================================
+ * Returns ONLY the requested flight/date.
  */
 
 const SERPAPI_URL = "https://serpapi.com/search.json";
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 25000;
 
 
 /* =========================================================
    CORS
-========================================================= */
+   ========================================================= */
 
-function cors(res) {
+function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader(
     "Access-Control-Allow-Methods",
@@ -33,103 +30,140 @@ function cors(res) {
 
 
 /* =========================================================
-   RESPONSE
-========================================================= */
+   JSON
+   ========================================================= */
 
-function response(res, status, data) {
-  cors(res);
-  return res.status(status).json(data);
+function sendJson(res, status, body) {
+  setCors(res);
+
+  res.status(status).json(body);
+}
+
+
+/* =========================================================
+   DATE VALIDATION
+   ========================================================= */
+
+function isValidDate(value) {
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const date = new Date(`${value}T00:00:00Z`);
+
+  return (
+    !isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value
+  );
 }
 
 
 /* =========================================================
    FLIGHT NORMALIZATION
-========================================================= */
+   ========================================================= */
 
 function normalizeFlight(value) {
+
   return String(value || "")
     .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "");
+    .replace(/[^A-Z0-9]/g, "")
+    .trim();
+
 }
 
 
-function displayFlight(value) {
-  const normalized = normalizeFlight(value);
+/* =========================================================
+   FLIGHT DISPLAY FORMAT
+   ========================================================= */
 
-  const match = normalized.match(
-    /^([A-Z]{2,3})(\d+)$/
-  );
+function displayFlight(value) {
+
+  const normalized =
+    normalizeFlight(value);
+
+  /*
+   Examples:
+
+   B6117
+   -> B6 117
+
+   BW601
+   -> BW 601
+
+   IB5634
+   -> IB 5634
+  */
+
+  const match =
+    normalized.match(/^([A-Z]{2,3})(\d+)$/);
 
   if (!match) {
     return String(value || "").trim();
   }
 
   return `${match[1]} ${match[2]}`;
+
 }
 
 
 /* =========================================================
-   DATE VALIDATION
-========================================================= */
-
-function validDate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return false;
-  }
-
-  const d = new Date(`${value}T00:00:00Z`);
-
-  return (
-    !Number.isNaN(d.getTime()) &&
-    d.toISOString().slice(0, 10) === value
-  );
-}
-
-
-/* =========================================================
-   FETCH
-========================================================= */
+   FETCH WITH TIMEOUT
+   ========================================================= */
 
 async function fetchWithTimeout(url) {
 
-  const controller = new AbortController();
+  const controller =
+    new AbortController();
 
-  const timer = setTimeout(
-    () => controller.abort(),
-    REQUEST_TIMEOUT_MS
-  );
+  const timeout =
+    setTimeout(
+      () => controller.abort(),
+      REQUEST_TIMEOUT_MS
+    );
 
   try {
 
-    return await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json"
-      },
-      signal: controller.signal
-    });
+    const response =
+      await fetch(
+        url,
+        {
+          method: "GET",
+          signal: controller.signal,
+          headers: {
+            Accept: "application/json"
+          }
+        }
+      );
+
+    return response;
 
   } finally {
 
-    clearTimeout(timer);
+    clearTimeout(timeout);
 
   }
+
 }
 
 
 /* =========================================================
-   SERPAPI
-========================================================= */
+   SERPAPI SEARCH
+   ========================================================= */
 
-async function serpapiSearch(query) {
+async function searchSerpApi(query) {
 
-  if (!process.env.SERPAPI_KEY) {
+  const apiKey =
+    process.env.SERPAPI_KEY;
+
+  if (!apiKey) {
     throw new Error(
-      "SERPAPI_KEY is missing from Vercel environment variables."
+      "SERPAPI_KEY is not configured."
     );
   }
 
-  const url = new URL(SERPAPI_URL);
+  const url =
+    new URL(SERPAPI_URL);
 
   url.searchParams.set(
     "engine",
@@ -143,7 +177,7 @@ async function serpapiSearch(query) {
 
   url.searchParams.set(
     "api_key",
-    process.env.SERPAPI_KEY
+    apiKey
   );
 
   url.searchParams.set(
@@ -161,82 +195,250 @@ async function serpapiSearch(query) {
     "mobile"
   );
 
-  const result = await fetchWithTimeout(
-    url.toString()
-  );
 
-  const text = await result.text();
+  const response =
+    await fetchWithTimeout(
+      url.toString()
+    );
+
+
+  const text =
+    await response.text();
+
 
   let data;
 
   try {
-    data = JSON.parse(text);
-  } catch {
+
+    data =
+      JSON.parse(text);
+
+  } catch (error) {
+
     throw new Error(
-      "SerpAPI did not return valid JSON."
+      "SerpApi returned an invalid response."
     );
+
   }
 
-  if (!result.ok) {
+
+  if (!response.ok) {
+
     throw new Error(
       data?.error ||
-      `SerpAPI HTTP ${result.status}`
+      `SerpApi request failed with ${response.status}.`
     );
+
   }
+
 
   if (data?.error) {
-    throw new Error(data.error);
+
+    throw new Error(
+      data.error
+    );
+
   }
 
+
   return data;
+
 }
 
 
 /* =========================================================
-   FIND FLIGHT RESULT
-========================================================= */
+   DATE NORMALIZATION
+   ========================================================= */
 
-function getFlightResult(data) {
+function normalizeDate(value) {
 
-  /*
-   * This is the important part.
-   *
-   * SerpAPI's Google flight-number search returns:
-   *
-   * {
-   *   flight_result: {
-   *      flight_designator: "...",
-   *      dates: [...]
-   *   }
-   * }
-   */
-
-  if (
-    data &&
-    data.flight_result &&
-    typeof data.flight_result === "object"
-  ) {
-    return data.flight_result;
+  if (!value) {
+    return null;
   }
 
-  /*
-   * Some responses may be wrapped in data.
-   */
+  const string =
+    String(value).trim();
 
-  if (
-    data?.data?.flight_result &&
-    typeof data.data.flight_result === "object"
-  ) {
-    return data.data.flight_result;
+
+  /*
+   Exact YYYY-MM-DD
+  */
+
+  const exact =
+    string.match(
+      /^(\d{4})-(\d{2})-(\d{2})$/
+    );
+
+  if (exact) {
+
+    return (
+      `${exact[1]}-${exact[2]}-${exact[3]}`
+    );
+
   }
+
+
+  /*
+   ISO timestamp
+  */
+
+  const iso =
+    string.match(
+      /^(\d{4})-(\d{2})-(\d{2})T/
+    );
+
+  if (iso) {
+
+    return (
+      `${iso[1]}-${iso[2]}-${iso[3]}`
+    );
+
+  }
+
+
+  /*
+   Try JavaScript date parsing
+  */
+
+  const parsed =
+    new Date(string);
+
+  if (!isNaN(parsed.getTime())) {
+
+    const year =
+      parsed.getUTCFullYear();
+
+    const month =
+      String(
+        parsed.getUTCMonth() + 1
+      ).padStart(2, "0");
+
+    const day =
+      String(
+        parsed.getUTCDate()
+      ).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+
+  }
+
 
   return null;
+
+}
+
+
+/* =========================================================
+   RECURSIVE OBJECT WALKER
+   ========================================================= */
+
+function findObjects(
+  value,
+  callback,
+  results = [],
+  visited = new Set()
+) {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return results;
+  }
+
+
+  if (
+    typeof value !== "object"
+  ) {
+    return results;
+  }
+
+
+  if (visited.has(value)) {
+    return results;
+  }
+
+  visited.add(value);
+
+
+  if (callback(value)) {
+    results.push(value);
+  }
+
+
+  if (Array.isArray(value)) {
+
+    for (const item of value) {
+
+      findObjects(
+        item,
+        callback,
+        results,
+        visited
+      );
+
+    }
+
+  } else {
+
+    for (
+      const key of Object.keys(value)
+    ) {
+
+      findObjects(
+        value[key],
+        callback,
+        results,
+        visited
+      );
+
+    }
+
+  }
+
+
+  return results;
+
+}
+
+
+/* =========================================================
+   FIND FLIGHT RESULT OBJECTS
+   ========================================================= */
+
+function findFlightResults(data) {
+
+  return findObjects(
+    data,
+    object => {
+
+      if (
+        !object ||
+        typeof object !== "object"
+      ) {
+        return false;
+      }
+
+      return (
+        object.flight_designator ||
+        object.title ||
+        object.route
+      ) && (
+        object.dates ||
+        object.departure_airport ||
+        object.arrival_airport ||
+        object.metadata
+      );
+
+    }
+  );
+
 }
 
 
 /* =========================================================
    FLIGHT NUMBER MATCH
-========================================================= */
+   ========================================================= */
 
 function flightMatches(
   flightResult,
@@ -244,279 +446,509 @@ function flightMatches(
 ) {
 
   const requested =
-    normalizeFlight(requestedFlight);
-
-  const possible = [
-
-    flightResult?.flight_designator,
-
-    flightResult?.flight_number,
-
-    flightResult?.title,
-
-    flightResult?.metadata?.flight_number,
-
-    flightResult?.metadata?.flight_designator
-
-  ];
-
-  return possible.some(value => {
-
-    const candidate =
-      normalizeFlight(value);
-
-    if (!candidate) {
-      return false;
-    }
-
-    return (
-      candidate === requested ||
-      candidate.includes(requested) ||
-      requested.includes(candidate)
+    normalizeFlight(
+      requestedFlight
     );
 
-  });
+  if (!requested) {
+    return false;
+  }
+
+
+  const candidates = [
+    flightResult.flight_designator,
+    flightResult.flight_number,
+    flightResult.title,
+    flightResult.codeshare,
+    flightResult.metadata?.flight_number,
+    flightResult.metadata?.flight_designator
+  ];
+
+
+  for (
+    const candidate of candidates
+  ) {
+
+    const normalized =
+      normalizeFlight(candidate);
+
+    if (!normalized) {
+      continue;
+    }
+
+
+    /*
+     Direct match
+    */
+
+    if (normalized === requested) {
+      return true;
+    }
+
+
+    /*
+     Candidate may contain airline name:
+
+     "JetBlue B6 117"
+    */
+
+    if (
+      normalized.includes(requested) ||
+      requested.includes(normalized)
+    ) {
+
+      return true;
+
+    }
+
+  }
+
+
+  return false;
+
 }
 
 
 /* =========================================================
-   FIND REQUESTED DATE
-========================================================= */
+   FIND EXACT DATE RECORD
+   ========================================================= */
 
-function findDate(
+function findExactDateRecord(
   flightResult,
   requestedDate
 ) {
 
   if (
     !Array.isArray(
-      flightResult?.dates
+      flightResult.dates
     )
   ) {
     return null;
   }
 
-  return (
-    flightResult.dates.find(
-      item =>
-        String(item?.date || "")
-          .slice(0, 10) === requestedDate
-    ) || null
-  );
+
+  for (
+    const item of flightResult.dates
+  ) {
+
+    if (!item) {
+      continue;
+    }
+
+
+    const itemDate =
+      normalizeDate(
+        item.date
+      );
+
+
+    if (
+      itemDate === requestedDate
+    ) {
+
+      return item;
+
+    }
+
+  }
+
+
+  return null;
+
 }
 
 
 /* =========================================================
-   ANSWER BOX FALLBACK
-========================================================= */
+   CHECK DIRECT FLIGHT RESULT DATE
+   ========================================================= */
 
-function answerBoxResult(
+function directFlightIsExactDate(
+  flightResult,
+  requestedDate
+) {
+
+  const possibleDates = [
+
+    flightResult.date,
+
+    flightResult.departure_airport?.date,
+
+    flightResult.departure_airport?.time,
+
+    flightResult.departure_airport?.scheduled_time,
+
+    flightResult.arrival_airport?.time,
+
+    flightResult.arrival_airport?.scheduled_time,
+
+    flightResult.metadata?.date
+
+  ];
+
+
+  return possibleDates.some(
+    value =>
+      normalizeDate(value) === requestedDate
+  );
+
+}
+
+
+/* =========================================================
+   FIND BEST EXACT FLIGHT
+   ========================================================= */
+
+function findExactFlight(
   data,
   requestedFlight,
   requestedDate
 ) {
 
-  const answer =
-    data?.answer_box;
+  const flightResults =
+    findFlightResults(data);
 
-  if (!answer) {
-    return null;
-  }
-
-  const answerFlight =
-    normalizeFlight(
-      answer.flight_number
-    );
-
-  const requested =
-    normalizeFlight(
-      requestedFlight
-    );
-
-  if (
-    !answerFlight ||
-    !(
-      answerFlight === requested ||
-      answerFlight.includes(requested) ||
-      requested.includes(answerFlight)
-    )
-  ) {
-    return null;
-  }
 
   /*
-   * Google's answer box sometimes doesn't provide
-   * an ISO date. We therefore only use this fallback
-   * when it explicitly contains the requested date.
-   */
+   FIRST:
+   Look for a flight_result with dates[]
+   and an exact requested date.
+  */
 
-  const rawText =
-    JSON.stringify(answer);
-
-  if (
-    !rawText.includes(requestedDate)
+  for (
+    const flightResult
+    of flightResults
   ) {
-    return null;
+
+    if (
+      !flightMatches(
+        flightResult,
+        requestedFlight
+      )
+    ) {
+      continue;
+    }
+
+
+    const exactRecord =
+      findExactDateRecord(
+        flightResult,
+        requestedDate
+      );
+
+
+    if (
+      exactRecord
+    ) {
+
+      return {
+        flightResult,
+        exactRecord
+      };
+
+    }
+
   }
 
-  return {
-    title:
-      answer.title ||
-      displayFlight(requestedFlight),
 
-    flight_designator:
-      answer.flight_number ||
-      displayFlight(requestedFlight),
+  /*
+   SECOND:
+   Some Google results return the
+   selected date directly instead
+   of using dates[].
+  */
 
-    flight_number:
-      answer.flight_number ||
-      displayFlight(requestedFlight),
+  for (
+    const flightResult
+    of flightResults
+  ) {
 
-    status:
-      answer.flight_status ||
-      "Flight status",
+    if (
+      !flightMatches(
+        flightResult,
+        requestedFlight
+      )
+    ) {
+      continue;
+    }
 
-    updated_label:
-      answer.latest_update ||
-      "",
 
-    departure_airport:
-      answer.departure || {},
+    if (
+      directFlightIsExactDate(
+        flightResult,
+        requestedDate
+      )
+    ) {
 
-    arrival_airport:
-      answer.arrival || {},
+      return {
+        flightResult,
+        exactRecord: null
+      };
 
-    date:
-      requestedDate
-  };
+    }
+
+  }
+
+
+  return null;
+
 }
 
 
 /* =========================================================
-   BUILD RESULT
-========================================================= */
+   CLONE
+   ========================================================= */
 
-function buildResult(
+function clone(value) {
+
+  if (
+    value === undefined ||
+    value === null
+  ) {
+    return value;
+  }
+
+  return JSON.parse(
+    JSON.stringify(value)
+  );
+
+}
+
+
+/* =========================================================
+   BUILD EXACT RESPONSE
+   ========================================================= */
+
+function buildExactFlightResult(
   flightResult,
-  dateRecord,
+  exactRecord,
   requestedDate
 ) {
 
-  const result = {
+  const result = {};
 
-    title:
-      flightResult?.title ||
-      flightResult?.flight_designator ||
-      "",
 
-    flight_designator:
-      flightResult?.flight_designator ||
-      "",
+  /*
+   Copy top-level information.
+  */
 
-    flight_number:
-      dateRecord?.metadata?.flight_number ||
-      flightResult?.flight_designator ||
-      "",
+  const safeTopLevel = [
+    "title",
+    "flight_designator",
+    "route",
+    "airline",
+    "airline_iata_code",
+    "airline_logo",
+    "logo",
+    "aircraft",
+    "duration",
+    "duration_label",
+    "source",
+    "source_url",
+    "codeshare",
+    "updated_at",
+    "updated_label",
+    "status"
+  ];
 
-    airline:
-      flightResult?.airline ||
-      "",
 
-    airline_iata_code:
-      flightResult?.airline_iata_code ||
-      dateRecord?.metadata?.airline_iata_code ||
-      "",
+  for (
+    const key of safeTopLevel
+  ) {
 
-    route:
-      flightResult?.route ||
-      "",
+    if (
+      flightResult[key] !== undefined
+    ) {
 
-    date:
-      requestedDate,
+      result[key] =
+        clone(
+          flightResult[key]
+        );
 
-    status:
-      dateRecord?.status ||
-      dateRecord?.metadata?.status ||
-      "Scheduled",
+    }
 
-    duration:
-      dateRecord?.duration ||
-      null,
+  }
 
-    duration_label:
-      dateRecord?.duration_label ||
-      "",
 
-    source:
-      dateRecord?.source ||
-      "",
+  /*
+   Exact requested date.
+  */
 
-    source_url:
-      dateRecord?.source_url ||
-      "",
+  result.date =
+    requestedDate;
 
-    codeshare:
-      dateRecord?.codeshare ||
-      "",
 
-    updated_at:
-      dateRecord?.updated_at ||
-      "",
+  /*
+   Exact date metadata.
+  */
 
-    updated_label:
-      dateRecord?.updated_label ||
-      "",
+  if (
+    exactRecord &&
+    exactRecord.metadata
+  ) {
 
-    metadata:
-      dateRecord?.metadata ||
-      {},
+    result.metadata =
+      clone(
+        exactRecord.metadata
+      );
 
-    departure_airport:
-      dateRecord?.departure_airport ||
-      null,
+  } else if (
+    flightResult.metadata
+  ) {
 
-    arrival_airport:
-      dateRecord?.arrival_airport ||
-      null
+    result.metadata =
+      clone(
+        flightResult.metadata
+      );
 
-  };
+  } else {
+
+    result.metadata = {};
+
+  }
+
+
+  /*
+   Exact date airport data.
+  */
+
+  if (
+    exactRecord &&
+    exactRecord.departure_airport
+  ) {
+
+    result.departure_airport =
+      clone(
+        exactRecord.departure_airport
+      );
+
+  } else if (
+    flightResult.departure_airport
+  ) {
+
+    result.departure_airport =
+      clone(
+        flightResult.departure_airport
+      );
+
+  }
+
+
+  if (
+    exactRecord &&
+    exactRecord.arrival_airport
+  ) {
+
+    result.arrival_airport =
+      clone(
+        exactRecord.arrival_airport
+      );
+
+  } else if (
+    flightResult.arrival_airport
+  ) {
+
+    result.arrival_airport =
+      clone(
+        flightResult.arrival_airport
+      );
+
+  }
+
+
+  /*
+   Preserve other useful fields
+   from the exact date record.
+  */
+
+  if (exactRecord) {
+
+    const excluded = [
+      "date",
+      "metadata",
+      "departure_airport",
+      "arrival_airport",
+      "dates",
+      "available_dates"
+    ];
+
+
+    for (
+      const key of Object.keys(
+        exactRecord
+      )
+    ) {
+
+      if (
+        excluded.includes(key)
+      ) {
+        continue;
+      }
+
+
+      if (
+        result[key] === undefined
+      ) {
+
+        result[key] =
+          clone(
+            exactRecord[key]
+          );
+
+      }
+
+    }
+
+  }
+
+
+  /*
+   Never return dates[].
+   Never return available_dates.
+  */
+
+  delete result.dates;
+  delete result.available_dates;
+
 
   return result;
+
 }
 
 
 /* =========================================================
-   MAIN
-========================================================= */
+   MAIN HANDLER
+   ========================================================= */
 
 export default async function handler(
   req,
   res
 ) {
 
-  cors(res);
+  setCors(res);
 
-  /*
-   * OPTIONS
-   */
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
+  if (
+    req.method === "OPTIONS"
+  ) {
+
+    return res
+      .status(204)
+      .end();
+
   }
 
 
-  /*
-   * GET ONLY
-   */
+  if (
+    req.method !== "GET"
+  ) {
 
-  if (req.method !== "GET") {
-
-    return response(
+    return sendJson(
       res,
       405,
       {
         success: false,
-        error: "GET requests only."
+        error:
+          "Method not allowed. Use GET."
       }
     );
 
@@ -525,14 +957,11 @@ export default async function handler(
 
   try {
 
-    /* =====================================================
-       PARAMETERS
-    ===================================================== */
-
     const rawFlight =
       String(
         req.query.flight || ""
       ).trim();
+
 
     const requestedDate =
       String(
@@ -540,63 +969,47 @@ export default async function handler(
       ).trim();
 
 
-    /* =====================================================
-       VALIDATE FLIGHT
-    ===================================================== */
+    /*
+     Required parameters
+    */
 
     if (!rawFlight) {
 
-      return response(
+      return sendJson(
         res,
         400,
         {
           success: false,
-          error: "Missing flight number."
+          error:
+            "Missing flight parameter."
         }
       );
 
     }
 
-
-    const normalizedFlight =
-      normalizeFlight(rawFlight);
-
-
-    if (!normalizedFlight) {
-
-      return response(
-        res,
-        400,
-        {
-          success: false,
-          error: "Invalid flight number."
-        }
-      );
-
-    }
-
-
-    /* =====================================================
-       VALIDATE DATE
-    ===================================================== */
 
     if (!requestedDate) {
 
-      return response(
+      return sendJson(
         res,
         400,
         {
           success: false,
-          error: "Missing date."
+          error:
+            "Missing date parameter."
         }
       );
 
     }
 
 
-    if (!validDate(requestedDate)) {
+    if (
+      !isValidDate(
+        requestedDate
+      )
+    ) {
 
-      return response(
+      return sendJson(
         res,
         400,
         {
@@ -609,181 +1022,88 @@ export default async function handler(
     }
 
 
-    /* =====================================================
-       DISPLAY FLIGHT
-    ===================================================== */
+    const normalizedFlight =
+      normalizeFlight(
+        rawFlight
+      );
 
-    const formattedFlight =
-      displayFlight(rawFlight);
+
+    const displayName =
+      displayFlight(
+        rawFlight
+      );
 
 
     /*
-     * IMPORTANT:
-     *
-     * We search the FLIGHT NUMBER directly.
-     *
-     * We don't depend on Google understanding
-     * the date as part of the flight query.
-     */
+     Use several Google-friendly
+     search formats.
+    */
 
     const queries = [
-
-      `"${formattedFlight}"`,
-
-      `"${normalizedFlight}"`,
-
-      `${formattedFlight} flight`
-
+      `"${displayName}" flight status ${requestedDate}`,
+      `"${normalizedFlight}" flight status ${requestedDate}`,
+      `${displayName} flight status ${requestedDate}`
     ];
 
 
-    let flightResult = null;
-    let dateRecord = null;
+    let matched = null;
+
     let lastData = null;
 
 
-    /* =====================================================
-       SEARCH SERPAPI
-    ===================================================== */
+    /*
+     Search until we find the
+     exact flight AND exact date.
+    */
 
     for (
-      const query of queries
+      const query
+      of queries
     ) {
 
-      console.log(
-        "BOKKARA SEARCH:",
-        query
-      );
-
       const data =
-        await serpapiSearch(query);
-
-      lastData = data;
-
-
-      const candidate =
-        getFlightResult(data);
+        await searchSerpApi(
+          query
+        );
 
 
-      /*
-       * If Google gave us a proper
-       * flight_result, use it.
-       */
-
-      if (
-        candidate &&
-        flightMatches(
-          candidate,
-          normalizedFlight
-        )
-      ) {
-
-        const exactDate =
-          findDate(
-            candidate,
-            requestedDate
-          );
+      lastData =
+        data;
 
 
-        /*
-         * Exact requested date found.
-         */
-
-        if (exactDate) {
-
-          flightResult =
-            candidate;
-
-          dateRecord =
-            exactDate;
-
-          break;
-
-        }
-
-      }
-
-
-      /*
-       * Answer box fallback.
-       */
-
-      const fallback =
-        answerBoxResult(
+      matched =
+        findExactFlight(
           data,
           normalizedFlight,
           requestedDate
         );
 
 
-      if (fallback) {
-
-        return response(
-          res,
-          200,
-          {
-            success: true,
-
-            query: {
-              flight: rawFlight,
-              normalized_flight:
-                normalizedFlight,
-              date:
-                requestedDate
-            },
-
-            flight_result:
-              fallback
-          }
-        );
-
+      if (matched) {
+        break;
       }
 
     }
 
 
-    /* =====================================================
-       NO EXACT DATE
-    ===================================================== */
+    /*
+     Nothing found.
+    */
 
-    if (
-      !flightResult ||
-      !dateRecord
-    ) {
+    if (!matched) {
 
-      console.log(
-        "BOKKARA NO EXACT RESULT",
-        {
-          flight:
-            normalizedFlight,
-
-          date:
-            requestedDate,
-
-          hadFlightResult:
-            !!getFlightResult(lastData)
-        }
-      );
-
-
-      return response(
+      return sendJson(
         res,
         404,
         {
           success: false,
-
           error:
-            `Flight ${formattedFlight} was not found for ${requestedDate}.`,
-
+            `No exact flight status was found for ${displayName} on ${requestedDate}.`,
           query: {
-            flight:
-              rawFlight,
-
+            flight: rawFlight,
             normalized_flight:
               normalizedFlight,
-
-            date:
-              requestedDate
+            date: requestedDate
           }
         }
       );
@@ -791,37 +1111,39 @@ export default async function handler(
     }
 
 
-    /* =====================================================
-       RETURN EXACT RESULT
-    ===================================================== */
-
-    const result =
-      buildResult(
-        flightResult,
-        dateRecord,
+    const exactFlightResult =
+      buildExactFlightResult(
+        matched.flightResult,
+        matched.exactRecord,
         requestedDate
       );
 
 
-    return response(
+    /*
+     FINAL SAFETY:
+     Make absolutely sure no date
+     arrays leak through.
+    */
+
+    delete exactFlightResult.dates;
+    delete exactFlightResult.available_dates;
+
+
+    return sendJson(
       res,
       200,
       {
         success: true,
 
         query: {
-          flight:
-            rawFlight,
-
+          flight: rawFlight,
           normalized_flight:
             normalizedFlight,
-
-          date:
-            requestedDate
+          date: requestedDate
         },
 
         flight_result:
-          result
+          exactFlightResult
       }
     );
 
@@ -829,38 +1151,18 @@ export default async function handler(
   } catch (error) {
 
     console.error(
-      "BOKKARA AIRLINE SEARCH ERROR:",
+      "Bokkara Airline Search Error:",
       error
     );
 
 
-    if (
-      error?.name ===
-      "AbortError"
-    ) {
-
-      return response(
-        res,
-        504,
-        {
-          success: false,
-
-          error:
-            "Flight search timed out. Please try again."
-        }
-      );
-
-    }
-
-
-    return response(
+    return sendJson(
       res,
       500,
       {
         success: false,
-
         error:
-          error?.message ||
+          error.message ||
           "Unable to retrieve flight information."
       }
     );
